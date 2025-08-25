@@ -461,14 +461,14 @@ def process_timesheet_data(df, selected_categories=None, selected_users=None):
     missing = [col for col in required_cols if col not in df.columns]
     
     if missing:
-        return None, f"Missing columns: {', '.join(missing)}"
+        return None, None, f"Missing columns: {', '.join(missing)}"
 
     # Convert date column
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df[df['Date'].notnull()]
     
     if df.empty:
-        return None, "Error: No valid dates found"
+        return None, None, "Error: No valid dates found"
 
     # Filter by selected categories
     if selected_categories:
@@ -483,7 +483,7 @@ def process_timesheet_data(df, selected_categories=None, selected_users=None):
         df = df[user_mask]
 
     if df.empty:
-        return None, "No data found for selected categories and users"
+        return None, None, "No data found for selected categories and users"
 
     # Add week start column
     df['WeekStart'] = df['Date'].dt.to_period('W').apply(lambda r: r.start_time)
@@ -491,7 +491,7 @@ def process_timesheet_data(df, selected_categories=None, selected_users=None):
     # Convert time to hours
     df['TimeHours'] = df['Time'].apply(excel_time_to_hours)
 
-    # Group by developer and week
+    # -------- WEEKLY SUMMARY --------
     result = (
         df.groupby(['Developer', 'WeekStart'])['TimeHours']
         .sum()
@@ -503,7 +503,9 @@ def process_timesheet_data(df, selected_categories=None, selected_users=None):
     result['Total Hours'] = result['TimeHours'].apply(hours_to_hhmm)
     result = result.drop('TimeHours', axis=1)
 
-    return result, None
+    # ✅ Return both weekly and cleaned daily
+    return result, df, None
+
 
 def create_visualizations(df, original_df):
     """Create interactive visualizations"""
@@ -680,8 +682,10 @@ def main():
                     
                     # Update results in real-time
                     if selected_categories and selected_users:
-                        result_df, error = process_timesheet_data(df, selected_categories, selected_users)
-                        
+                        result_df, daily_df, error = process_timesheet_data(df, selected_categories, selected_users)
+                        st.session_state.result_df = result_df
+                        st.session_state.daily_df = daily_df
+  
                         if error:
                             st.error(f"❌ {error}")
                         else:
@@ -860,6 +864,44 @@ def main():
                 use_container_width=True,
                 height=400
             )
+
+        if "daily_df" in st.session_state and st.session_state.daily_df is not None:
+            st.subheader("📅 Daily Total Hours by Developer (<8 or >8 hrs)")
+
+            daily_df = st.session_state.daily_df.copy()
+
+            # Format Date (remove 00:00:00)
+            daily_df["Date"] = pd.to_datetime(daily_df["Date"]).dt.date
+
+            # --- 🔹 Group by Developer + Date ---
+            daily_totals = (
+                daily_df.groupby(["Developer", "Date"])["TimeHours"]
+                .sum()
+                .reset_index()
+            )
+
+            # Exclude exactly 8 hours
+            daily_totals = daily_totals[daily_totals["TimeHours"] != 8]
+
+            # Format hours into hh:mm
+            daily_totals["Total Hours"] = daily_totals["TimeHours"].apply(hours_to_hhmm)
+
+            # Keep only needed columns
+            daily_totals = daily_totals[["Developer", "Date", "Total Hours"]]
+
+            # Sort by Developer + Date
+            daily_totals = daily_totals.sort_values(by=["Developer", "Date"])
+
+            # Show table
+            st.dataframe(
+                daily_totals,
+                use_container_width=True,
+                height=400
+            )
+
+
+
+    
             
             # Download button
             csv = result_df.to_csv(index=False)
@@ -893,7 +935,7 @@ def main():
             
             st.metric("Categories Used", f"{len(selected_categories)}/{original_total_categories}")
             st.metric("Users Analyzed", f"{len(selected_users)}/{original_total_devs}")
-        
+
         # Visualizations
         st.subheader("📊 Analytics Dashboard (Filtered Data)")
         
